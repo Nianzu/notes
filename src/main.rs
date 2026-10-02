@@ -17,10 +17,10 @@ use std::path::{Path, PathBuf};
 use tokenizers::{Tokenizer, TruncationParams};
 
 // The model is compiled into the binary, so it works with no downloads.
+// https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
 const MODEL_WEIGHTS: &[u8] = include_bytes!("../model/model.safetensors");
 const MODEL_CONFIG: &str = include_str!("../model/config.json");
 const MODEL_TOKENIZER: &[u8] = include_bytes!("../model/tokenizer.json");
-
 const MAX_TOKENS: usize = 256; // all-MiniLM-L6-v2 was trained on inputs up to this length
 const RESULTS: usize = 5;
 
@@ -59,6 +59,7 @@ fn main() {
     }
 }
 
+// Defaults to ~/notes
 fn notes_dir() -> PathBuf {
     match std::env::var("NOTES_DIR") {
         Ok(dir) => PathBuf::from(dir),
