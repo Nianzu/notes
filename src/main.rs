@@ -110,7 +110,7 @@ fn main() {
     } else {
         let search_str = &args.join(" ");
         let results = search(&embedder, &index_file, search_str);
-        let result_strings = result_strings(results);
+        let result_strings = result_strings(&results);
 
         let mut selected_entry = 0;
         loop {
@@ -123,7 +123,12 @@ fn main() {
             match parse_key(&buf[..n]) {
                 Action::Up =>  {if selected_entry > 0 {selected_entry -= 1;} },
                 Action::Down  =>  {if selected_entry < result_strings.len()-1 {selected_entry += 1;} },
-                Action::Go =>  {break},
+                Action::Go =>  {
+                    let target_path = format!("{}/{}",notes_dir.to_str().expect("unable to read notes dir"),&results[selected_entry].1.file);
+                    let line_num = format!("+{}",&results[selected_entry].1.line);
+                    let _ = Command::new("vim").arg(target_path).arg(line_num.to_string()).status();
+                    break;
+                },
                 Action::Quit => break,
                 Action::None => {},
             }
@@ -288,7 +293,7 @@ fn search(embedder: &Embedder, index_file: &Path, query: &str) -> Vec<(f32, Entr
     scored
 }
 
-fn result_strings(scored_entries: Vec<(f32, Entry)>) -> Vec<String> {
+fn result_strings(scored_entries: &Vec<(f32, Entry)>) -> Vec<String> {
     let mut out : Vec<String> = Vec::new();
     for (score, entry) in scored_entries.iter() {
         let entry_string = format!("{:.3}  {}:{}  {}",score, entry.file, entry.line, entry.heading );
