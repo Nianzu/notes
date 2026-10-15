@@ -61,8 +61,7 @@ pub fn render(
     out.push_str("\r\n");
     // TODO grab keybinds from actual keybinds
     out.push_str(
-        &"[k/l] move  [enter] open/cd  [h] up  \
-         [u]nread [p]artial [a]pproved  [space] cycle  [f]lag  [q]uit\r\n"
+        &"[k/l] move  [enter] open [q]uit\r\n"
             .grey()
             .reset(),
     );
