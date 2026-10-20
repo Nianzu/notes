@@ -8,12 +8,18 @@
 
 mod tui;
 use std::io::{self, Read, Write};
+use std::fs::read_to_string;
 use candle_core::{DType, Device, Tensor};
 use std::process::{Command, Stdio};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use std::path::{Path, PathBuf};
 use tokenizers::{Tokenizer, TruncationParams};
+use anyhow::Result;
+use data_encoding::HEXUPPER;
+use ring::digest::{Context, Digest, SHA256};
+use std::fs::File;
+use std::io::{BufReader};
 
 // The model is compiled into the binary, so it works with no downloads.
 // https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
@@ -22,6 +28,23 @@ const MODEL_CONFIG: &str = include_str!("../model/config.json");
 const MODEL_TOKENIZER: &[u8] = include_bytes!("../model/tokenizer.json");
 const MAX_TOKENS: usize = 256; // all-MiniLM-L6-v2 was trained on inputs up to this length
 const RESULTS: usize = 10;
+
+// https://rust-lang-nursery.github.io/rust-cookbook/cryptography/hashing.html
+fn sha256_digest<R: Read>(mut reader: R) -> Result<Digest> {
+    let mut context = Context::new(&SHA256);
+    let mut buffer = [0; 1024];
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        context.update(&buffer[..count]);
+    }
+
+    Ok(context.finish())
+}
+
 
 /// One heading's worth of text from a notes file.
 struct Section {
@@ -85,13 +108,16 @@ fn main() {
     let mut stdin = io::stdin();
     let mut buf = [0u8; 8];
     let notes_dir = notes_dir();
-    let index_file = notes_dir.join(".notes-index.tsv");
+    let index_folder = notes_dir.join(".index");
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() {
         eprintln!("usage: notes index | notes <query>");
         std::process::exit(1);
     }
+
+    let embedder = Embedder::new();
+    build_index(&embedder, &notes_dir, &index_folder);
 
     let _raw = match RawMode::enable() {
         Ok(r) => r,
@@ -103,13 +129,11 @@ fn main() {
     print!("\x1b[?25l"); // hide cursor
     let _ = io::stdout().flush();
 
-    let embedder = Embedder::new();
 
     if args[0] == "index" {
-        build_index(&embedder, &notes_dir, &index_file);
     } else {
         let search_str = &args.join(" ");
-        let results = search(&embedder, &index_file, search_str);
+        let results = search(&embedder, &index_folder, search_str);
         let result_strings = result_strings(&results);
 
         let mut selected_entry = 0;
@@ -175,14 +199,35 @@ fn notes_dir() -> PathBuf {
 // Indexing
 // ---------------------------------------------------------------------------
 
-// AI GENERATED
-fn build_index(embedder: &Embedder, notes_dir: &Path, index_file: &Path) {
+fn build_index(embedder: &Embedder, notes_dir: &Path, index_folder: &Path) {
     let mut files = Vec::new();
     find_markdown_files(notes_dir, &mut files);
 
-    let mut out = String::new();
-    let mut count = 0;
+    let mut section_count = 0;
+    let mut file_count = 0;
     for path in &files {
+        let mut out = String::new();
+
+        let mut context = Context::new(&SHA256);
+        context.update(path.clone().into_os_string().into_string().expect("issue with path").as_str().as_bytes());
+        let hash = context.finish();
+        let hash_hex = HEXUPPER.encode(hash.as_ref());
+        let index_file = index_folder.join(hash_hex);
+        if let Some(old_hash) = read_to_string(&index_file).expect("unable to read index file for hash").lines().next() {
+            if let Ok(file_contents) = File::open(path) {
+                let reader = BufReader::new(file_contents);
+                if let Ok(digest) = sha256_digest(reader) {
+                    let content_hash = HEXUPPER.encode(digest.as_ref());
+                    if content_hash == old_hash {continue;}
+                    println!("{} != {}",content_hash, old_hash);
+
+                    out += &format!("{}\n", content_hash);
+                }
+            }
+        }
+        println!("{}",path.display());
+
+
         let content = std::fs::read_to_string(path).unwrap_or_default();
         let relative = path.strip_prefix(notes_dir).unwrap().display().to_string();
 
@@ -199,12 +244,13 @@ fn build_index(embedder: &Embedder, notes_dir: &Path, index_file: &Path) {
                 section.heading,
                 numbers.join(",")
             );
-            count += 1;
+            section_count += 1;
         }
+        file_count += 1;
+        std::fs::write(index_file, out).expect("could not write index");
     }
 
-    std::fs::write(index_file, out).expect("could not write index");
-    println!("indexed {count} sections from {} files", files.len());
+    println!("indexed {} sections from {} files out of {} files", section_count, file_count, files.len());
 }
 
 // AI GENERATED
@@ -279,8 +325,8 @@ fn split_into_sections(file: &str, content: &str) -> Vec<Section> {
 // ---------------------------------------------------------------------------
 
 // AI GENERATED
-fn search(embedder: &Embedder, index_file: &Path, query: &str) -> Vec<(f32, Entry)>{
-    let entries = load_index(index_file);
+fn search(embedder: &Embedder, index_folder: &Path, query: &str) -> Vec<(f32, Entry)>{
+    let entries = load_index(index_folder);
     let query_vector = embedder.embed(query);
 
     // Vectors are normalized, so the dot product is the cosine similarity.
@@ -302,10 +348,21 @@ fn result_strings(scored_entries: &Vec<(f32, Entry)>) -> Vec<String> {
     out
 }
 
+fn load_index(index_folder: &Path) -> Vec<Entry> {
+    let files = std::fs::read_dir(index_folder).unwrap();
+    let mut out:Vec<Entry> = vec![];
+
+    for file in files {
+        out.append(&mut load_index_file(&file.unwrap().path()));
+    }
+    out
+}
+
 // AI GENERATED
-fn load_index(index_file: &Path) -> Vec<Entry> {
-    let text = std::fs::read_to_string(index_file).expect("no index found, run `notes index` first");
-    text.lines()
+fn load_index_file(index_folder: &Path) -> Vec<Entry> {
+    
+    let text = std::fs::read_to_string(index_folder).expect("no index found, run `notes index` first");
+    text.lines().skip(1)
         .map(|line| {
             let parts: Vec<&str> = line.split('\t').collect();
             Entry {
